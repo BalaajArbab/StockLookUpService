@@ -1,6 +1,9 @@
 
 using MongoDB.Driver;
 using StockPriceLookUpService.Models;
+using System;
+using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 
 namespace StockPriceLookUpService
@@ -13,9 +16,6 @@ namespace StockPriceLookUpService
             var builder = WebApplication.CreateBuilder(args);
 
             // Add services to the container.
-            builder.Services.AddAuthorization();
-
-            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
             builder.Services.ConfigureSwaggerGen(setup =>
@@ -32,13 +32,13 @@ namespace StockPriceLookUpService
             app.UseSwagger();
             app.UseSwaggerUI();
 
-            app.UseHttpsRedirection();
+            HttpClient serviceRegistryClient = new HttpClient() { BaseAddress = new Uri("https://service-registry-cs4471.1p2lshm2wxjn.us-east.codeengine.appdomain.cloud/") };
+            
+            await Login(serviceRegistryClient);
 
-            app.UseAuthorization();
-
-            HttpClient client = new HttpClient() { BaseAddress = new Uri("https://www.alphavantage.co") };
-            //string? alphavantageApiKey = Environment.GetEnvironmentVariable("ALPHAVANTAGE_API_KEY");
-            string? alphaVantageApiKey = "4IL79R6TL3K26YPM";
+            HttpClient alphavantageClient = new HttpClient() { BaseAddress = new Uri("https://www.alphavantage.co") };
+            /*string? alphaVantageApiKey = "AXSEJJ5A1R7KCYV3";*/
+            string? alphaVantageApiKey = "demo";
 
             CachingService cachingService = new CachingService();
 
@@ -46,6 +46,7 @@ namespace StockPriceLookUpService
             {
                 if (string.IsNullOrEmpty(symbol))
                 {
+                    Console.WriteLine("No symbol provided.");
                     return "Symbol is required!!!";
                 }
 
@@ -63,7 +64,7 @@ namespace StockPriceLookUpService
                 // If not in the cache, fetch from the API
                 Console.WriteLine($"{symbol} not found in cache. Fetching from API.");
                 string url = $"/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={alphaVantageApiKey}";
-                HttpResponseMessage response = await client.GetAsync(url);
+                HttpResponseMessage response = await alphavantageClient.GetAsync(url);
                 response.EnsureSuccessStatusCode().WriteRequestToConsole();
 
                 string responseBody = await response.Content.ReadAsStringAsync();
@@ -90,35 +91,89 @@ namespace StockPriceLookUpService
 
 
                 string url = $"/query?function=TIME_SERIES_DAILY&outputsize=compact&symbol={symbol}&apikey={alphaVantageApiKey}";
-                HttpResponseMessage response = await client.GetAsync(url);
+                HttpResponseMessage response = await alphavantageClient.GetAsync(url);
                 response.EnsureSuccessStatusCode().WriteRequestToConsole();
 
                 string responseBody = await response.Content.ReadAsStringAsync();
                 return responseBody;
             });
 
-            /*await Task.Run(async () =>
+
+            app.MapGet("/", (HttpContext httpContext) =>
             {
-                Console.WriteLine("Sending Heartbeat");
-            }, );
-*/
-            /*await PeriodicAsync(async () =>
+                httpContext.Response.Redirect("/swagger/index.html");
+            }).ExcludeFromDescription();
+
+            await Register(serviceRegistryClient);
+
+            Task.Run(async () =>
             {
-                Console.WriteLine("Sending Heartbeat");
-            });*/
+                while (true)
+                {
+                    Console.WriteLine("Sending Heartbeat");
+                    await Reregister(serviceRegistryClient);
+                    await Task.Delay(15000);
+                }
+            });
+
 
             app.Run();
         }
 
-        public static async Task PeriodicAsync(Func<Task> action, CancellationToken cancellationToken = default)
+
+        public static async Task<bool> Login(HttpClient httpClient)
         {
-            TimeSpan interval = new TimeSpan(0, 0, 30);
-            using PeriodicTimer timer = new(interval);
-            while (true)
-            {
-                await action();
-                await timer.WaitForNextTickAsync(cancellationToken);
-            }
+            Console.WriteLine("Logging in to the service registry");
+            HttpResponseMessage response = await httpClient.PostAsJsonAsync("/login", new {username = "admin", password = "admin"});
+            response.EnsureSuccessStatusCode().WriteRequestToConsole();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+
+            var document = JsonDocument.Parse(responseBody);
+            var token = document.RootElement.GetProperty("accessToken").GetString();
+
+            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+            /*httpClient.DefaultRequestHeaders.Add("Content-Type", "application/json");*/
+            Console.WriteLine("Authorized to use service registry");
+
+            return true;
+        }
+
+        public static async Task<bool> Register(HttpClient httpClient)
+        {
+            Console.WriteLine("Registering with the service registry");
+            HttpResponseMessage response = await httpClient.PostAsJsonAsync("/register", new { serviceName = "MS1-StockLookUp", port = "443", description = "A Microservice to query stock pricing data based on ticker", version = "1.0", instanceId = "1", url = "https://stocklookupservice20241204134818.azurewebsites.net" });
+            response.EnsureSuccessStatusCode().WriteRequestToConsole();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine(responseBody);
+
+            Console.WriteLine("Registered with service registry");
+
+            return true;
+        }
+
+        public static async Task<bool> Reregister(HttpClient httpClient)
+        {
+            Console.WriteLine("Sending heartbeat to Service Registry.");
+            HttpResponseMessage response = await httpClient.PostAsJsonAsync("/reregister", new { serviceName = "MS1-StockLookUp", instanceId = "1" });
+            response.EnsureSuccessStatusCode().WriteRequestToConsole();
+
+            return true;
+        }
+
+        public static async Task<bool> Deregister(HttpClient httpClient)
+        {
+            Console.WriteLine("Degistering with the service registry");
+            HttpResponseMessage response = await httpClient.PostAsJsonAsync("/degister", new { serviceName = "MS1-StockLookUp", instanceId = "1" });
+            response.EnsureSuccessStatusCode().WriteRequestToConsole();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine(responseBody);
+
+            Console.WriteLine("Degistered with service registry");
+
+            return true;
         }
 
     }

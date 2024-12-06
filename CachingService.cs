@@ -39,5 +39,8 @@ namespace StockPriceLookUpService
 
         public async Task CreateAsync(StockPrice stock) =>
         await _stockPricesCollection.InsertOneAsync(stock);
+
     }
+
+    
 }
